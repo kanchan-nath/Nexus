@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # Zero-dependency project — npm install is fast, no lockfile drift risk.
+      - name: Install (no deps, sanity check package.json)
+        run: npm install
+
+      # Confirm no third-party runtime packages ever crept into package.json —
+      # this is the hard constraint of the project, worth guarding in CI itself.
+      - name: Verify zero-dependency constraint
+        shell: bash
+        run: |
+          DEPS=$(node -p "Object.keys(require('./package.json').dependencies || {}).length")
+          if [ "$DEPS" != "0" ]; then
+            echo "FAIL: found $DEPS runtime dependencies in package.json — zero-dep constraint violated"
+            exit 1
+          fi
+          echo "OK: zero runtime dependencies"
+
+      - name: Run unit + integration tests
+        run: npm test
+
+      # Cross-platform smoke test: boot the real gateway via the one-command
+      # entrypoint, hit it, confirm it's alive, then kill it cleanly.
+      # Written as a Node script (not bash/curl) so it runs identically on
+      # Windows, macOS, and Linux without shell-specific syntax.
+      - name: Smoke test — npm start boots and responds
+        run: node scripts/ci-smoke-test.js
+
+  config-test:
+    name: Config validation (-t equivalent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate nexus.config.json
+        run: node src/cli.js -t --config nexus.config.json
